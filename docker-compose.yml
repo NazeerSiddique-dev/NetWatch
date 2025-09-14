@@ -1,0 +1,80 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: netwatch-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: netwatch
+      POSTGRES_PASSWORD: netwatch_secret
+      POSTGRES_DB: netwatch
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netwatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: netwatch-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Backend ─────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: netwatch-backend
+    restart: unless-stopped
+    network_mode: host        # Required for raw packet capture on host interfaces
+    cap_add:
+      - NET_ADMIN             # Required for network namespace operations
+      - NET_RAW               # Required for pcap / raw socket capture
+    environment:
+      DATABASE_URL: postgresql+asyncpg://netwatch:netwatch_secret@localhost:5432/netwatch
+      REDIS_URL: redis://localhost:6379/0
+      COLLECTOR_MODE: synthetic
+      DEFAULT_INTERFACE: lo
+      APP_ENV: production
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  # ── Frontend ─────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: netwatch-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
